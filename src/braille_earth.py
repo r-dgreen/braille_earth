@@ -51,7 +51,7 @@ def round_to_multiple(number, multiple):
 
 
 class BrailleEarth:
-    def __init__(self, *shapefile, bbox=None):
+    def __init__(self, *shapefile, bbox=None, width=None, height=None):
         self.shapefiles = shapefile
         self.tranformer = Transformer.from_crs('EPSG:4326', 'EPSG:3857', always_xy=True)
         self.reverse_transformer = Transformer.from_crs('EPSG:3857', 'EPSG:4326', always_xy=True)
@@ -59,20 +59,20 @@ class BrailleEarth:
             self.bbox = self.WEST, self.SOUTH, self.EAST, self.NORTH
         else:
             self.bbox = self.tranformer.transform_bounds(*bbox)
-        self.set_resolution()
+        self.set_resolution(width=width, height=height)
         
 
-    def set_resolution(self, w=None, h=None):
-        if w is None and h is None:
-            w, _ = os.get_terminal_size()
+    def set_resolution(self, width=None, height=None):
+        if width is None and height is None:
+            width, _ = os.get_terminal_size()
 
-        if w:
-            self.columns = int(w)
+        if width:
+            self.columns = int(width)
             self.cell_width = (self.east - self.west) / self.columns
             self.cell_height = self.cell_width / CELL_RATIO
             self.rows = int((self.north - self.south) // self.cell_height)
-        elif h:
-            self.rows = int(h)
+        elif height:
+            self.rows = int(height)
             self.cell_height = (self.north - self.south) / self.rows
             self.cell_width = self.cell_height * CELL_RATIO
             self.columns = int((self.east - self.west) // self.cell_width)
@@ -202,8 +202,11 @@ def main():
     parser = ArgumentParser(description='Generate Braille Map from ShapeFiles. [EPSG:4326] -> [EPSG:3857]')
     parser.add_argument('shapefiles', metavar='SHAPEFILES', nargs='+', help='Paths to supported shapefile/shapefile archive.')
     parser.add_argument('-b', '--bbox', metavar=('LEFT', 'BOTTOM', 'RIGHT', 'TOP'), nargs=4, type=float, default=(-180, -60, 180, 75), help='GPS bounding box to clip region')
+    size_group = parser.add_mutually_exclusive_group()
+    size_group.add_argument('--width', type=int, help='Width in character units of map to generate.')
+    size_group.add_argument('--height', type=int, help='Height in character units of map to generate.')
     args = parser.parse_args()
-    be = BrailleEarth(*args.shapefiles, bbox=args.bbox)
+    be = BrailleEarth(*args.shapefiles, bbox=args.bbox, width=args.width, height=args.height)
     be.load_points()
     be.print()
 
