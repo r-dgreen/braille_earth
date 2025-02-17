@@ -201,7 +201,7 @@ class BrailleEarth:
 def main():
     parser = ArgumentParser(description='Generate Braille Map from ShapeFiles. [EPSG:4326] -> [EPSG:3857]')
     parser.add_argument('shapefiles', metavar='SHAPEFILES', nargs='+', help='Paths to supported shapefile/shapefile archive.')
-    parser.add_argument('-b', '--bbox', metavar=('LEFT', 'BOTTOM', 'RIGHT', 'TOP'), nargs=4, default=(-180, -60, 180, 75), help='GPS bounding box to clip region')
+    parser.add_argument('-b', '--bbox', metavar=('LEFT', 'BOTTOM', 'RIGHT', 'TOP'), nargs=4, type=float, default=(-180, -60, 180, 75), help='GPS bounding box to clip region')
     args = parser.parse_args()
     be = BrailleEarth(*args.shapefiles, bbox=args.bbox)
     be.load_points()
