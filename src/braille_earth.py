@@ -1,5 +1,8 @@
 from argparse import ArgumentParser
 from collections import defaultdict
+from dataclasses import dataclass
+from enum import Enum
+from functools import lru_cache
 import math
 import os
 from pathlib import Path
@@ -35,7 +38,31 @@ B6: int = 0x0020
 B7: int = 0x0040
 B8: int = 0x0080
 
+@dataclass
+class Outcode:
+    INSIDE: int =  0b0000
+    LEFT: int = 0b0001
+    RIGHT: int = 0b0010
+    BOTTOM: int = 0b0100
+    TOP: int = 0b1000
 
+
+@lru_cache
+def calculate_outcode(bbox, x, y):
+    left, bottom, top, right = bbox
+    code = Outcode.INSIDE
+    if x < left:
+        code |= Outcode.LEFT.value
+    elif x > right:
+        code |= Outcode.RIGHT.value
+    if y < bottom:
+        code |= Outcode.BOTTOM
+    elif y > top:
+        code |= Outcode.TOP
+    return code
+    
+
+@lru_cache
 def calculate_bg_bbox(width, height, x_offset, y_offset):
     for x1, y1, x2, y2 in BRAILLE_GRID:
         bbox = (x_offset + (x1 * width), 
@@ -97,6 +124,99 @@ class BrailleEarth:
             self.x_regions.append((i * x_region_size, (i * x_region_size) + x_region_size))
         for i in range(math.ceil(self.rows / y_region_size)):
             self.y_regions.append((i * y_region_size, (i * y_region_size) + y_region_size))
+
+    @property
+    def round_size(self):
+        round_width, round_height = POINT_ROUND
+        round_width *= self.cell_width
+        round_height *= self.cell_height
+        round_width, round_height = round(round_width), round(round_height)
+        return round_width, round_height
+    
+    @property
+    def x_offset(self):
+        x_offset = (self.cell_width * self.columns) - self.east
+        return x_offset
+    
+    @property
+    def y_offset(self):
+        y_offset = (self.cell_height * self.rows) + self.south
+        return y_offset
+
+    def progress_bar(self, sequence):
+        total = sum([len(value) for value in sequence])
+        return tqdm.tqdm(total=total, ascii='⡀⡄⡆⡇⣇⣧⣷⣿')
+
+    def generate_shapes(self):
+        x_offset = self.x_offset
+        y_offset = self.y_offset
+
+        for sf_path in self.shapefiles:
+            sf = shapefile.Reader(sf_path)
+            for (left, right) in self.x_regions:
+                right = min(right, self.columns)
+                for (top, bottom) in self.y_regions:    
+                    bottom = min(bottom, self.rows)
+                    region = (left, right, top, bottom)
+                    bbox = self.reverse_transformer.transform_bounds((left * self.cell_width) - x_offset,
+                                                                    -((bottom * self.cell_height) - y_offset),
+                                                                    (right * self.cell_width) - x_offset,
+                                                                    -((top * self.cell_height) - y_offset))
+                    for shape in sf.shapes(bbox=bbox):
+                        yield shape, region
+
+
+
+    def load_segments(self):
+        round_width, round_height = self.round_size
+        self.segments = defaultdict(set)    
+        for shape, (left, right, top, bottom) in self.generate_shapes():
+            for (x1, y1), (x2, y2) in zip(shape.points, shape.points[1::]):
+                x1, y1 = self.tranformer.transform(x1, y1)
+                x2, y2 = self.tranformer.transform(x2, y2)
+                x1 = round_to_multiple(x1, round_width)
+                y1 = round_to_multiple(y1, round_height)
+                x2 = round_to_multiple(x2, round_width)
+                y2 = round_to_multiple(y2, round_height)    
+                min_x = min(x1, x2)
+                max_x = max(x1, x2)
+                min_y = min(y1, y2)
+                max_y = max(y1, y2)                            
+                self.segments[min_x, max_x, max_y, min_y].add(((left, right), (top, bottom)))
+
+        progress_bar = self.progress_bar(self.segments.values())
+
+        for (min_x, max_x, max_y, min_y), slices in self.segments.items():
+            for column_slice, row_slice in slices:
+                column_slice = slice(*column_slice)
+                row_slice = slice(*row_slice)
+
+                progress_bar.update(n=1)
+
+                # The y points are within the bbox and                       +---+
+                # the min_x is to the left of the right edge and     min_x   |   |   max_x 
+                # the max_x is to the right of the left edge                 +---+
+                self.braile_array[column_slice,row_slice,:] |= (min_x <= self.bbox_array[column_slice,row_slice,:,2]) & \
+                                                            (max_x >= self.bbox_array[column_slice,row_slice,:,0])  & \
+                                                            (min_y <= self.bbox_array[column_slice,row_slice,:,1]) & \
+                                                            (min_y > self.bbox_array[column_slice,row_slice,:,3]) & \
+                                                            (max_y <= self.bbox_array[column_slice,row_slice,:,1]) & \
+                                                            (max_y > self.bbox_array[column_slice,row_slice,:,3])
+
+                self.braile_array[column_slice,row_slice,:] |= (min_y <= self.bbox_array[column_slice,row_slice,:,3]) & \
+                                                            (max_y >= self.bbox_array[column_slice,row_slice,:,1])  & \
+                                                            (min_x <= self.bbox_array[column_slice,row_slice,:,0]) & \
+                                                            (min_x > self.bbox_array[column_slice,row_slice,:,2]) & \
+                                                            (max_x <= self.bbox_array[column_slice,row_slice,:,0]) & \
+                                                            (max_x > self.bbox_array[column_slice,row_slice,:,2])
+
+                self.braile_array[column_slice,row_slice,:] |= (min_x >= self.bbox_array[column_slice,row_slice,:,0]) & \
+                                                            (min_x < self.bbox_array[column_slice,row_slice,:,2])  & \
+                                                            (min_y <= self.bbox_array[column_slice,row_slice,:,1]) & \
+                                                            (min_y > self.bbox_array[column_slice,row_slice,:,3])                
+
+
+        self.generate_output()
 
     def load_points(self):
         # round every point to the nearest cursor size multiple
@@ -207,7 +327,8 @@ def main():
     size_group.add_argument('--height', type=int, help='Height in character units of map to generate.')
     args = parser.parse_args()
     be = BrailleEarth(*args.shapefiles, bbox=args.bbox, width=args.width, height=args.height)
-    be.load_points()
+    #be.load_points()
+    be.load_segments()
     be.print()
 
 
